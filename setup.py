@@ -6,7 +6,7 @@
 
 import setuptools
 
-REQUIREMENTS = ['future', 'pandas', 'requests', 'requests_cache']
+REQUIREMENTS = ['future', 'pandas', 'requests', 'requests_cache', 'tqdm']
 
 EXTRAS_REQUIRE = {
     'dev': [

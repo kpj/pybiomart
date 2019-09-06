@@ -6,14 +6,24 @@ from builtins import *
 from future.utils import native_str
 
 from io import StringIO
+from copy import deepcopy
 from xml.etree import ElementTree
 
 import pandas as pd
+
+from tqdm import tqdm
 
 # pylint: disable=import-error
 from .base import ServerBase, BiomartException, DEFAULT_SCHEMA
 
 # pylint: enable=import-error
+
+
+def generate_chunks(l, n):
+    """From https://stackoverflow.com/a/312464/1474740."""
+    for i in range(0, len(l), n):
+        yield l[i:i + n]
+
 
 class Dataset(ServerBase):
     """Class representing a biomart dataset.
@@ -178,6 +188,37 @@ class Dataset(ServerBase):
                     description=attrib.get('description', ''),
                     default=default)
 
+    def generate_queries(self, root, filters, chunk_size=500):
+        """Seamlessly split long queries into multiple short ones."""
+        if filters is None:
+            yield root
+        else:
+            if len(filters) > 1:
+                # TODO: fix this
+                raise NotImplementedError(
+                    'Filter splitting not supported for multiple filters'
+                    f'(have {len(filters)})')
+
+            # for name, value in filters.items():
+            name, value = list(filters.items())[0]
+            for value_chunk in generate_chunks(value, chunk_size):
+                root_current = deepcopy(root)
+
+                dataset_list = root_current.findall('Dataset')
+                assert len(dataset_list) == 1
+                dataset_current = dataset_list[0]
+
+                try:
+                    filter_ = self.filters[name]
+                except KeyError:
+                    raise BiomartException(
+                        'Unknown filter {}, check dataset filters '
+                        'for a list of valid filters.'.format(name))
+
+                self._add_filter_node(
+                    dataset_current, filter_, value_chunk)
+                yield root_current
+
     def query(self,
               attributes=None,
               filters=None,
@@ -250,40 +291,43 @@ class Dataset(ServerBase):
                     'Unknown attribute {}, check dataset attributes '
                     'for a list of valid attributes.'.format(name))
 
-        if filters is not None:
-            # Add filter elements.
-            for name, value in filters.items():
-                try:
-                    filter_ = self.filters[name]
-                    self._add_filter_node(dataset, filter_, value)
-                except KeyError:
-                    raise BiomartException(
-                        'Unknown filter {}, check dataset filters '
-                        'for a list of valid filters.'.format(name))
+        # Add filter elements.
+        # TODO: decide on reasonable chunk size
+        # TODO: handle generator properly
+        tmp = self.generate_queries(root, filters)
+        query_list = list(tmp)
 
-        # Fetch response.
-        response = self.get(query=ElementTree.tostring(root))
+        # Fetch response(s).
+        result_list = []
+        for tree_root in tqdm(
+            query_list,
+            desc='Retrieving data'
+        ):
+            response = self.get(query=ElementTree.tostring(tree_root))
 
-        # Raise exception if an error occurred.
-        if 'Query ERROR' in response.text:
-            raise BiomartException(response.text)
+            # Raise exception if an error occurred.
+            if 'Query ERROR' in response.text:
+                raise BiomartException(response.text)
 
-        # Parse results into a DataFrame.
-        try:
-            result = pd.read_csv(StringIO(response.text), sep='\t', dtype=dtypes)
-        # Type error is raised of a data type is not understood by pandas
-        except TypeError as err:
-            raise ValueError("Non valid data type is used in dtypes")
+            # Parse results into a DataFrame.
+            try:
+                result = pd.read_csv(StringIO(response.text), sep='\t', dtype=dtypes)
+            # Type error is raised of a data type is not understood by pandas
+            except TypeError as err:
+                raise ValueError('Non valid data type is used in dtypes')
 
-        if use_attr_names:
-            # Rename columns with attribute names instead of display names.
-            column_map = {
-                self.attributes[attr].display_name: attr
-                for attr in attributes
-            }
-            result.rename(columns=column_map, inplace=True)
+            if use_attr_names:
+                # Rename columns with attribute names instead of display names.
+                column_map = {
+                    self.attributes[attr].display_name: attr
+                    for attr in attributes
+                }
+                result.rename(columns=column_map, inplace=True)
 
-        return result
+            result_list.append(result)
+
+        return pd.concat(result_list)
+
 
     @staticmethod
     def _add_attr_node(root, attr):
