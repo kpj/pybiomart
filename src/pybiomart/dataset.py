@@ -191,6 +191,7 @@ class Dataset(ServerBase):
     def generate_queries(self, root, filters, chunk_size=500):
         """Seamlessly split long queries into multiple short ones."""
         if filters is None:
+            # no need to split the query if no filters are specified
             yield root
         else:
             if len(filters) > 1:
@@ -199,15 +200,17 @@ class Dataset(ServerBase):
                     'Filter splitting not supported for multiple filters'
                     f'(have {len(filters)})')
 
-            # for name, value in filters.items():
-            name, value = list(filters.items())[0]
+            name, value = list(filters.items())[0]  # for name, value in filters.items():
             for value_chunk in generate_chunks(value, chunk_size):
+                # always work with clean tree
                 root_current = deepcopy(root)
 
+                # assume we have only a single dataset in query
                 dataset_list = root_current.findall('Dataset')
                 assert len(dataset_list) == 1
                 dataset_current = dataset_list[0]
 
+                # extract and apply filter
                 try:
                     filter_ = self.filters[name]
                 except KeyError:
